@@ -1,7 +1,7 @@
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { Files, FileText, IdCard, CalendarDays, Hand } from 'lucide-react';
+import { Files, FileText, IdCard, CalendarDays, Hand, MailWarning } from 'lucide-react';
 import { api, apiErrorMessage } from '../../lib/apiClient';
 import { useApplication } from '../../lib/hooks';
 import { useAuthStore } from '../../store/authStore';
@@ -20,10 +20,37 @@ const RENEWAL_WINDOW_DAYS = 60;
 
 export default function DashboardPage() {
   const user = useAuthStore((s) => s.user);
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data, isLoading } = useApplication();
   const [error, setError] = useState(null);
   const [renewBusy, setRenewBusy] = useState(false);
+  const [verifyBusy, setVerifyBusy] = useState(false);
+
+  const startEmailVerification = async () => {
+    setError(null);
+    setVerifyBusy(true);
+    try {
+      const { data: res } = await api.post('/auth/resend-otp', {
+        identifier: user.email,
+        purpose: 'EMAIL_VERIFICATION',
+        channel: 'EMAIL',
+      });
+      sessionStorage.setItem('unicts_otp_identifier', user.email);
+      sessionStorage.setItem('unicts_otp_purpose', 'EMAIL_VERIFICATION');
+      navigate('/verify-otp', {
+        state: {
+          identifier: user.email,
+          purpose: 'EMAIL_VERIFICATION',
+          channel: 'EMAIL',
+          devOtp: res.data.devOtp,
+        },
+      });
+    } catch (err) {
+      setError(apiErrorMessage(err));
+      setVerifyBusy(false);
+    }
+  };
 
   const { data: notifications } = useQuery({
     queryKey: ['notifications'],
@@ -70,6 +97,25 @@ export default function DashboardPage() {
         subtitle="Your UNICTS membership at a glance"
       />
       <ErrorText>{error}</ErrorText>
+
+      {user && user.email && user.emailVerifiedAt === null && (
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+          <div className="flex items-center gap-2">
+            <MailWarning className="h-5 w-5 shrink-0" />
+            <span>
+              <b>{user.email}</b> isn't verified yet — verify it once to log in with
+              your email and keep receiving notices there.
+            </span>
+          </div>
+          <button
+            onClick={startEmailVerification}
+            disabled={verifyBusy}
+            className="btn-secondary"
+          >
+            {verifyBusy ? 'Sending code…' : 'Verify email'}
+          </button>
+        </div>
+      )}
 
       <div className="card">
         {!application && (

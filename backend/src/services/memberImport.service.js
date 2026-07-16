@@ -2,6 +2,7 @@ const bcrypt = require('bcryptjs');
 const prisma = require('../config/prisma');
 const config = require('../config/env');
 const { ApiError } = require('../utils/errors');
+const { hasMxRecords } = require('../utils/emailDomain');
 const { normalizePhone, splitName } = require('./auth.service');
 const notificationService = require('./notification.service');
 
@@ -88,6 +89,27 @@ function parseExcel(buffer) {
   return mapped;
 }
 
+// Flag rows whose email domain can't receive mail. One DNS lookup per
+// unique domain (cached inside hasMxRecords).
+async function applyMxValidation(entries) {
+  const domainChecks = new Map();
+  for (const entry of entries) {
+    if (!entry.valid || !entry.email) continue;
+    const domain = entry.email.split('@')[1];
+    if (!domainChecks.has(domain)) domainChecks.set(domain, hasMxRecords(entry.email));
+  }
+  const resolved = new Map(
+    await Promise.all([...domainChecks].map(async ([domain, p]) => [domain, await p]))
+  );
+  for (const entry of entries) {
+    if (!entry.valid || !entry.email) continue;
+    if (!resolved.get(entry.email.split('@')[1])) {
+      entry.errors.push("Email domain can't receive mail");
+      entry.valid = false;
+    }
+  }
+}
+
 // ---------- Preview: normalize + flag duplicates ----------
 
 async function preview({ users, fileBuffer }) {
@@ -98,6 +120,7 @@ async function preview({ users, fileBuffer }) {
   }
 
   const entries = rawEntries.map(normalizeEntry);
+  await applyMxValidation(entries);
 
   // Repeats inside the same batch: keep the first occurrence, flag the rest
   const seenPhones = new Set();
@@ -203,6 +226,7 @@ async function commit(adminId, { users, defaultPassword }) {
   if (entries.length > MAX_ROWS) {
     throw ApiError.badRequest(`Import at most ${MAX_ROWS} people at a time`, 'TOO_MANY_ROWS');
   }
+  await applyMxValidation(entries);
 
   const passwordHash = await bcrypt.hash(defaultPassword, 10);
   const results = [];
@@ -253,8 +277,11 @@ async function commit(adminId, { users, defaultPassword }) {
           email: entry.email,
           passwordHash,
           role: 'MEMBER',
-          // Admin vouched for the contact info — no OTP verification gate
+          // Admin vouched for the contact info — no OTP verification gate,
+          // and the provided channels count as verified for login purposes
           status: 'ACTIVE',
+          emailVerifiedAt: entry.email ? new Date() : null,
+          phoneVerifiedAt: entry.phone ? new Date() : null,
           address: entry.address,
           preferredOtpChannel: entry.phone ? 'SMS' : 'EMAIL',
           memberProfile: { create: { firstName, lastName, mobileNumber: entry.phone } },

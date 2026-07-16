@@ -50,10 +50,16 @@ const config = {
     user: env('SMTP_USER', null),
     pass: env('SMTP_PASS', null),
     from: env('MAIL_FROM', 'UNICTS <no-reply@unicts.org.np>'),
+    // Dev only: when no SMTP_HOST is set, send through an auto-provisioned
+    // Ethereal test inbox (real SMTP) and log preview URLs
+    devPreview: env('EMAIL_DEV_PREVIEW', 'true') !== 'false',
     get enabled() {
       return Boolean(this.host);
     },
   },
+
+  // Reject emails whose domain has no MX records (signup + bulk import)
+  emailMxCheck: env('EMAIL_MX_CHECK', 'true') !== 'false',
 
   sms: {
     apiUrl: env('SMS_API_URL', null),

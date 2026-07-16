@@ -11,6 +11,9 @@ export default function VerifyOtpPage() {
   const state = location.state || {};
   const identifier =
     state.identifier || sessionStorage.getItem('unicts_otp_identifier') || '';
+  const purpose =
+    state.purpose || sessionStorage.getItem('unicts_otp_purpose') || 'SIGNUP';
+  const isEmailVerification = purpose === 'EMAIL_VERIFICATION';
 
   const [code, setCode] = useState('');
   const [error, setError] = useState(null);
@@ -41,10 +44,11 @@ export default function VerifyOtpPage() {
       const { data } = await api.post('/auth/verify-otp', {
         identifier,
         code,
-        purpose: 'SIGNUP',
+        purpose,
       });
       useAuthStore.getState().setSession(data.data);
       sessionStorage.removeItem('unicts_otp_identifier');
+      sessionStorage.removeItem('unicts_otp_purpose');
 
       // If a category was picked on /apply before signup, open the
       // application now and drop straight into the wizard.
@@ -72,7 +76,8 @@ export default function VerifyOtpPage() {
     try {
       const { data } = await api.post('/auth/resend-otp', {
         identifier,
-        purpose: 'SIGNUP',
+        purpose,
+        channel: isEmailVerification ? 'EMAIL' : undefined,
       });
       setCooldown(60);
       setInfo(
@@ -88,8 +93,13 @@ export default function VerifyOtpPage() {
   return (
     <div className="mx-auto max-w-md px-4 py-12">
       <div className="card">
-        <h1 className="text-xl font-bold text-slate-900">Verify your account</h1>
+        <h1 className="text-xl font-bold text-slate-900">
+          {isEmailVerification ? 'Verify your email' : 'Verify your account'}
+        </h1>
         <p className="mt-1 text-sm text-slate-500">
+          {isEmailVerification
+            ? 'To log in with your email it must be verified once. '
+            : ''}
           Enter the 6-digit code sent to <b>{identifier}</b>
           {state.channel ? ` by ${state.channel}` : ''}.
         </p>

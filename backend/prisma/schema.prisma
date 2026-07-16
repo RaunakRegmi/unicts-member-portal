@@ -18,6 +18,11 @@ model User {
   role                UserRole   @default(MEMBER)
   status              UserStatus @default(PENDING_VERIFICATION)
   preferredOtpChannel OtpChannel @default(SMS)
+  // Set when an OTP delivered over that channel is confirmed (or when an
+  // admin vouches for the contact at import). Email login requires a
+  // verified email.
+  emailVerifiedAt     DateTime?
+  phoneVerifiedAt     DateTime?
   // Free-text address captured at admin import; the structured KYC
   // addresses live on MemberProfile.addresses
   address             String?
@@ -73,6 +78,7 @@ enum OtpPurpose {
   SIGNUP
   LOGIN
   PASSWORD_RESET
+  EMAIL_VERIFICATION
 }
 
 // Server-side refresh-token store: enables rotation on every use and

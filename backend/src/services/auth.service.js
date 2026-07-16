@@ -1,6 +1,7 @@
 const bcrypt = require('bcryptjs');
 const prisma = require('../config/prisma');
 const { ApiError } = require('../utils/errors');
+const { hasMxRecords } = require('../utils/emailDomain');
 const tokenService = require('./token.service');
 const otpService = require('./otp.service');
 
@@ -20,6 +21,8 @@ function publicUser(user) {
     role: user.role,
     status: user.status,
     preferredOtpChannel: user.preferredOtpChannel,
+    emailVerifiedAt: user.emailVerifiedAt,
+    phoneVerifiedAt: user.phoneVerifiedAt,
   };
 }
 
@@ -33,6 +36,16 @@ async function findUserByIdentifier(identifier) {
 async function signup({ name, email, phoneNumber, password, otpChannel }) {
   const phone = normalizePhone(phoneNumber);
   const normalizedEmail = email.toLowerCase();
+
+  // A well-formed address is not enough — the domain must actually be able
+  // to receive mail (MX lookup) before we build an account around it.
+  if (!(await hasMxRecords(normalizedEmail))) {
+    throw ApiError.unprocessable(
+      "That email's domain can't receive mail — double-check the address",
+      'EMAIL_DOMAIN_INVALID'
+    );
+  }
+
   const { firstName, lastName } = splitName(name);
   const passwordHash = await bcrypt.hash(password, 10);
 
@@ -86,18 +99,27 @@ async function signup({ name, email, phoneNumber, password, otpChannel }) {
 }
 
 async function verifyOtp({ identifier, code, purpose = 'SIGNUP' }) {
-  const user = await findUserByIdentifier(identifier);
+  let user = await findUserByIdentifier(identifier);
   if (!user) throw ApiError.notFound('No account found for that phone/email');
 
-  await otpService.verifyOtp(user, code, purpose);
+  const otp = await otpService.verifyOtp(user, code, purpose);
 
-  if (purpose === 'SIGNUP' && user.status === 'PENDING_VERIFICATION') {
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { status: 'ACTIVE', lastLoginAt: new Date() },
-    });
-    user.status = 'ACTIVE';
+  // A confirmed OTP proves ownership of the channel it was delivered on
+  const data = {};
+  if (otp.deliveryChannel === 'EMAIL' && !user.emailVerifiedAt) {
+    data.emailVerifiedAt = new Date();
   }
+  if (otp.deliveryChannel === 'SMS' && !user.phoneVerifiedAt) {
+    data.phoneVerifiedAt = new Date();
+  }
+  if (purpose === 'SIGNUP' && user.status === 'PENDING_VERIFICATION') {
+    data.status = 'ACTIVE';
+    data.lastLoginAt = new Date();
+  }
+  if (Object.keys(data).length) {
+    user = await prisma.user.update({ where: { id: user.id }, data });
+  }
+
   if (user.status !== 'ACTIVE') {
     throw ApiError.forbidden('Account is suspended or deactivated', 'ACCOUNT_INACTIVE');
   }
@@ -112,7 +134,17 @@ async function resendOtp({ identifier, purpose = 'SIGNUP', channel }) {
   if (purpose === 'SIGNUP' && user.status !== 'PENDING_VERIFICATION') {
     throw ApiError.badRequest('This account is already verified', 'ALREADY_VERIFIED');
   }
-  const otp = await otpService.issueOtp(user, purpose, channel);
+
+  let resolvedChannel = channel;
+  if (purpose === 'EMAIL_VERIFICATION') {
+    if (!user.email) throw ApiError.badRequest('This account has no email address', 'NO_EMAIL');
+    if (user.emailVerifiedAt) {
+      throw ApiError.badRequest('This email is already verified', 'ALREADY_VERIFIED');
+    }
+    resolvedChannel = 'EMAIL';
+  }
+
+  const otp = await otpService.issueOtp(user, purpose, resolvedChannel);
   return { otpChannel: otp.channel, expiresInMinutes: otp.expiresInMinutes, devOtp: otp.devOtp };
 }
 
@@ -138,6 +170,17 @@ async function login({ identifier, phoneNumber, password }) {
     throw ApiError.forbidden('Account is suspended or deactivated', 'ACCOUNT_INACTIVE');
   }
 
+  // Email may only be used as a login identifier once it's proven legit —
+  // send a verification code and have the client run the verify flow.
+  const usedEmailIdentifier = String(identifier || phoneNumber).includes('@');
+  if (usedEmailIdentifier && !user.emailVerifiedAt) {
+    await otpService.issueOtp(user, 'EMAIL_VERIFICATION', 'EMAIL');
+    throw ApiError.forbidden(
+      'Verify your email to log in with it — a code was just sent to your inbox',
+      'EMAIL_VERIFICATION_REQUIRED'
+    );
+  }
+
   await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
   const tokens = await tokenService.issueTokens(user);
   return { user: publicUser(user), tokens };
@@ -156,7 +199,11 @@ async function forgotPassword({ identifier }) {
   const user = await findUserByIdentifier(identifier);
   // Generic response either way so account existence can't be probed
   if (!user) return { sent: true };
-  const otp = await otpService.issueOtp(user, 'PASSWORD_RESET');
+  // Deliver the code over the channel the user identified themselves with:
+  // typed an email → code goes to that inbox (issueOtp still falls back if
+  // the account lacks that channel)
+  const channel = String(identifier).includes('@') ? 'EMAIL' : 'SMS';
+  const otp = await otpService.issueOtp(user, 'PASSWORD_RESET', channel);
   return { sent: true, otpChannel: otp.channel, devOtp: otp.devOtp };
 }
 
@@ -164,10 +211,19 @@ async function resetPassword({ identifier, code, newPassword }) {
   const user = await findUserByIdentifier(identifier);
   if (!user) throw ApiError.notFound('No account found for that phone/email');
 
-  await otpService.verifyOtp(user, code, 'PASSWORD_RESET');
+  const otp = await otpService.verifyOtp(user, code, 'PASSWORD_RESET');
   await prisma.user.update({
     where: { id: user.id },
-    data: { passwordHash: await bcrypt.hash(newPassword, 10) },
+    data: {
+      passwordHash: await bcrypt.hash(newPassword, 10),
+      // Completing a reset over a channel proves ownership of it too
+      ...(otp.deliveryChannel === 'EMAIL' && !user.emailVerifiedAt
+        ? { emailVerifiedAt: new Date() }
+        : {}),
+      ...(otp.deliveryChannel === 'SMS' && !user.phoneVerifiedAt
+        ? { phoneVerifiedAt: new Date() }
+        : {}),
+    },
   });
   await tokenService.revokeAllForUser(user.id);
   return { reset: true };

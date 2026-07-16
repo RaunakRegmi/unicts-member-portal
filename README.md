@@ -88,6 +88,20 @@ frontend/
 - RBAC: `MEMBER` / `ADMIN` / `SUPER_ADMIN` on `User`; only super admins can change roles.
 - All uploads are content-sniffed (magic bytes) server-side and stored privately; access is via short-lived signed URLs only.
 
+### Email legitimacy & verification
+
+- **MX-record validation**: signup and bulk import reject email addresses whose domain can't receive mail (DNS MX lookup, 10-min cache, fail-open on transient DNS trouble). Toggle with `EMAIL_MX_CHECK`.
+- **Channel verification stamps**: `User.emailVerifiedAt` / `phoneVerifiedAt` are set whenever an OTP delivered over that channel is confirmed (signup, email-verification flow, or a password reset completed over that channel). Admin-imported contacts count as verified — the admin vouched for them.
+- **Email login requires a verified email**: logging in with a phone number is always fine, but using an email as the identifier returns `403 EMAIL_VERIFICATION_REQUIRED` (and auto-sends a code) until that inbox is confirmed once. The OTP screen handles the `EMAIL_VERIFICATION` purpose, and the dashboard shows a "verify your email" banner for unverified addresses.
+- **Password-reset codes follow the identifier**: type your email into forgot-password and the code goes to that inbox; type your phone and it arrives by SMS.
+
+### Real SMTP delivery
+
+Emails are sent as multipart text + **branded HTML** through, in priority order:
+1. **Configured SMTP** (`SMTP_HOST/PORT/USER/PASS` — Gmail app password, SendGrid, SES, anything; 465 = implicit TLS, 587 = STARTTLS; connection verified on first send),
+2. **Ethereal dev mode** (no `SMTP_HOST` set): an auto-provisioned test inbox receives mail over real SMTP and a **preview URL is logged per message** — the full pipeline works with zero configuration,
+3. console logging as the last resort (`EMAIL_DEV_PREVIEW=false`).
+
 ## Verified end-to-end
 
 `scripts-free` smoke test exercised: signup→OTP→login, application+full KYC, photo/signature/document/CV uploads, signed URL serving, 100% completion, waived payment, submit+lock, admin approve, background ID-card PDF generation (real Chrome render), card download + public QR verification, CV generation, events RSVP, newsletters, and RBAC denials.

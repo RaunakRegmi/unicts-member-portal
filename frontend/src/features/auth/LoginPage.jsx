@@ -36,9 +36,12 @@ export default function LoginPage() {
         err.response && err.response.data && err.response.data.error
           ? err.response.data.error.code
           : null;
-      if (code === 'VERIFICATION_REQUIRED') {
+      if (code === 'VERIFICATION_REQUIRED' || code === 'EMAIL_VERIFICATION_REQUIRED') {
+        const purpose =
+          code === 'EMAIL_VERIFICATION_REQUIRED' ? 'EMAIL_VERIFICATION' : 'SIGNUP';
         sessionStorage.setItem('unicts_otp_identifier', values.identifier);
-        navigate('/verify-otp', { state: { identifier: values.identifier } });
+        sessionStorage.setItem('unicts_otp_purpose', purpose);
+        navigate('/verify-otp', { state: { identifier: values.identifier, purpose } });
         return;
       }
       setError(apiErrorMessage(err));

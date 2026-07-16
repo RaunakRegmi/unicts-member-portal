@@ -21,15 +21,17 @@ const signupSchema = z.object({
   otpChannel: z.enum(['SMS', 'EMAIL']).default('SMS'),
 });
 
+const otpPurposes = ['SIGNUP', 'LOGIN', 'PASSWORD_RESET', 'EMAIL_VERIFICATION'];
+
 const verifyOtpSchema = z.object({
   identifier: identifierSchema,
   code: z.string().trim().regex(/^\d{6}$/, 'The code is 6 digits'),
-  purpose: z.enum(['SIGNUP', 'LOGIN', 'PASSWORD_RESET']).default('SIGNUP'),
+  purpose: z.enum(otpPurposes).default('SIGNUP'),
 });
 
 const resendOtpSchema = z.object({
   identifier: identifierSchema,
-  purpose: z.enum(['SIGNUP', 'LOGIN', 'PASSWORD_RESET']).default('SIGNUP'),
+  purpose: z.enum(otpPurposes).default('SIGNUP'),
   channel: z.enum(['SMS', 'EMAIL']).optional(),
 });
 

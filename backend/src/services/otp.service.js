@@ -76,7 +76,8 @@ async function verifyOtp(user, code, purpose) {
     where: { id: otp.id },
     data: { verifiedAt: new Date() },
   });
-  return true;
+  // Callers use the delivery channel to stamp email/phone as verified
+  return otp;
 }
 
 module.exports = { issueOtp, verifyOtp };
