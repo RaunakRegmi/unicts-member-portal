@@ -1,0 +1,437 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- Identity, Auth & OTP ----------
+
+model User {
+  id                  String     @id @default(uuid())
+  // Nullable: admin-imported members may arrive with only an email address
+  phoneNumber         String?    @unique
+  email               String?    @unique
+  passwordHash        String
+  role                UserRole   @default(MEMBER)
+  status              UserStatus @default(PENDING_VERIFICATION)
+  preferredOtpChannel OtpChannel @default(SMS)
+  // Free-text address captured at admin import; the structured KYC
+  // addresses live on MemberProfile.addresses
+  address             String?
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+  lastLoginAt         DateTime?
+
+  memberProfile          MemberProfile?
+  membershipApplications MembershipApplication[]
+  otpVerifications       OtpVerification[]
+  refreshTokens          RefreshToken[]
+  googleCalendarToken    GoogleCalendarToken?
+  notifications          Notification[]
+  eventRegistrations     EventRegistration[]
+  certifications         Certification[]
+  calendarSyncedEvents   CalendarSyncedEvent[]
+}
+
+enum UserRole {
+  MEMBER
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum UserStatus {
+  PENDING_VERIFICATION
+  ACTIVE
+  SUSPENDED
+  DEACTIVATED
+}
+
+model OtpVerification {
+  id              String     @id @default(uuid())
+  userId          String
+  user            User       @relation(fields: [userId], references: [id])
+  otpCodeHash     String
+  deliveryChannel OtpChannel
+  purpose         OtpPurpose
+  expiresAt       DateTime
+  verifiedAt      DateTime?
+  attempts        Int        @default(0)
+  createdAt       DateTime   @default(now())
+
+  @@index([userId, purpose, createdAt])
+}
+
+enum OtpChannel {
+  SMS
+  EMAIL
+}
+
+enum OtpPurpose {
+  SIGNUP
+  LOGIN
+  PASSWORD_RESET
+}
+
+// Server-side refresh-token store: enables rotation on every use and
+// hard invalidation on logout / suspension.
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// ---------- Membership Group, Category & Application ----------
+
+model MembershipGroup {
+  id           String                  @id @default(uuid())
+  name         String                  @unique // "Central" today; extensible later
+  applications MembershipApplication[]
+}
+
+model MembershipApplication {
+  id                String             @id @default(uuid())
+  userId            String
+  user              User               @relation(fields: [userId], references: [id])
+  membershipGroupId String
+  membershipGroup   MembershipGroup    @relation(fields: [membershipGroupId], references: [id])
+  category          MembershipCategory
+  status            ApplicationStatus  @default(DRAFT)
+  completionPercent Int                @default(0)
+  submittedAt       DateTime?
+  reviewedAt        DateTime?
+  reviewedById      String?
+  rejectionReason   String?
+  expiresAt         DateTime? // membership validity / renewal due date
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  institutionalDetail InstitutionalDetail?
+  idCard              IdCard?
+  payment             Payment?
+
+  @@index([status])
+}
+
+enum MembershipCategory {
+  GENERAL
+  INSTITUTIONAL
+}
+
+enum ApplicationStatus {
+  DRAFT
+  SUBMITTED
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  EXPIRED
+}
+
+// ---------- Member Profile & KYC/KYM ----------
+
+model MemberProfile {
+  id                    String     @id @default(uuid())
+  userId                String     @unique
+  user                  User       @relation(fields: [userId], references: [id])
+  firstName             String?
+  lastName              String?
+  dob                   DateTime?
+  gender                String?
+  mobileNumber          String?
+  workplaceTelephone    String?
+  ictDomainId           String?
+  ictDomain             IctDomain? @relation(fields: [ictDomainId], references: [id])
+  bloodGroup            String?
+  profilePictureUrl     String?
+  signatureUrl          String? // captured via signature pad or uploaded scan
+  socialProfileUrl      String? // LinkedIn/social link, surfaced from the verify page
+  emergencyContactName  String?
+  emergencyContactPhone String?
+
+  addresses         Address[]
+  educationDetail   EducationDetail?
+  employmentDetail  EmploymentDetail?
+  identityDocuments IdentityDocument[]
+  cvDocuments       CvDocument[]
+}
+
+model IctDomain {
+  id       String  @id @default(uuid())
+  name     String  @unique // "Digital Banking", "E-Governance", ...
+  isActive Boolean @default(true)
+
+  profiles MemberProfile[]
+}
+
+model Address {
+  id              String        @id @default(uuid())
+  memberProfileId String
+  memberProfile   MemberProfile @relation(fields: [memberProfileId], references: [id])
+  type            AddressType
+  province        String
+  district        String
+  municipality    String
+  wardNumber      String
+  tole            String
+  sameAsPermanent Boolean       @default(false)
+
+  @@unique([memberProfileId, type])
+}
+
+enum AddressType {
+  PERMANENT
+  TEMPORARY
+}
+
+model EducationDetail {
+  id                   String        @id @default(uuid())
+  memberProfileId      String        @unique
+  memberProfile        MemberProfile @relation(fields: [memberProfileId], references: [id])
+  highestQualification String
+  institutionName      String?
+  fieldOfStudy         String?
+}
+
+model EmploymentDetail {
+  id                 String        @id @default(uuid())
+  memberProfileId    String        @unique
+  memberProfile      MemberProfile @relation(fields: [memberProfileId], references: [id])
+  organizationName   String?
+  designation        String?
+  natureOfJob        String // permanent | contract | temporary | self_employed | student | unemployed
+  organizationSector String
+}
+
+model IdentityDocument {
+  id                 String             @id @default(uuid())
+  memberProfileId    String
+  memberProfile      MemberProfile      @relation(fields: [memberProfileId], references: [id])
+  documentType       DocumentType
+  documentNumber     String
+  frontImageUrl      String?
+  backImageUrl       String?
+  verificationStatus VerificationStatus @default(PENDING)
+
+  @@unique([memberProfileId, documentType])
+}
+
+enum DocumentType {
+  CITIZENSHIP
+  NATIONAL_ID
+  PASSPORT
+  PAN
+}
+
+enum VerificationStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+model InstitutionalDetail {
+  id                         String                @id @default(uuid())
+  membershipApplicationId    String                @unique
+  membershipApplication      MembershipApplication @relation(fields: [membershipApplicationId], references: [id])
+  businessName               String
+  businessRegistrationNumber String
+  businessRegistrationDocUrl String
+  vatOrPanNumber             String
+  vatOrPanDocUrl             String
+}
+
+// ---------- CV Upload / Builder ----------
+
+model CvTemplate {
+  id              String @id @default(uuid())
+  name            String
+  previewImageUrl String
+  templateSchema  Json // layout + section config the builder UI renders from
+
+  cvDocuments CvDocument[]
+}
+
+model CvDocument {
+  id              String        @id @default(uuid())
+  memberProfileId String
+  memberProfile   MemberProfile @relation(fields: [memberProfileId], references: [id])
+  sourceType      CvSourceType
+  fileUrl         String?
+  templateId      String?
+  template        CvTemplate?   @relation(fields: [templateId], references: [id])
+  parsedData      Json? // structured fields extracted from an uploaded CV
+  createdAt       DateTime      @default(now())
+}
+
+enum CvSourceType {
+  UPLOADED
+  GENERATED
+}
+
+// ---------- ID Card & Payment ----------
+
+model IdCard {
+  id                      String                @id @default(uuid())
+  membershipApplicationId String                @unique
+  membershipApplication   MembershipApplication @relation(fields: [membershipApplicationId], references: [id])
+  cardNumber              String                @unique
+  qrCodeData              String // resolves to the UNICTS verification page
+  memberSignatureUrl      String?
+  presidentSignatureUrl   String?
+  pdfUrl                  String?
+  issuedAt                DateTime?
+  expiresAt               DateTime?
+  status                  IdCardStatus          @default(PENDING)
+}
+
+enum IdCardStatus {
+  PENDING
+  ACTIVE
+  REVOKED
+  EXPIRED
+}
+
+model Payment {
+  id                      String                @id @default(uuid())
+  membershipApplicationId String                @unique
+  membershipApplication   MembershipApplication @relation(fields: [membershipApplicationId], references: [id])
+  amount                  Decimal               @default(0)
+  currency                String                @default("NPR")
+  status                  PaymentStatus         @default(PENDING)
+  method                  String?
+  transactionReference    String?
+  paidAt                  DateTime?
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  WAIVED
+}
+
+// ---------- Events, Calendar, Certifications, Newsletters ----------
+
+model Event {
+  id                    String   @id @default(uuid())
+  title                 String
+  description           String
+  startDatetime         DateTime
+  endDatetime           DateTime
+  location              String?
+  bannerImageUrl        String?
+  googleCalendarEventId String? // reserved for a future org-wide calendar
+  createdById           String
+  createdAt             DateTime @default(now())
+
+  registrations EventRegistration[]
+  syncedCopies  CalendarSyncedEvent[]
+}
+
+model EventRegistration {
+  id               String   @id @default(uuid())
+  eventId          String
+  event            Event    @relation(fields: [eventId], references: [id])
+  userId           String
+  user             User     @relation(fields: [userId], references: [id])
+  registeredAt     DateTime @default(now())
+  attendanceStatus String   @default("registered")
+
+  @@unique([eventId, userId])
+}
+
+model GoogleCalendarToken {
+  id           String   @id @default(uuid())
+  userId       String   @unique
+  user         User     @relation(fields: [userId], references: [id])
+  accessToken  String
+  refreshToken String
+  expiresAt    DateTime
+  scope        String
+}
+
+// Tracks the per-member Google Calendar copy of each org event, so syncs
+// are idempotent (update instead of duplicate on re-sync).
+model CalendarSyncedEvent {
+  id            String @id @default(uuid())
+  userId        String
+  user          User   @relation(fields: [userId], references: [id])
+  eventId       String
+  event         Event  @relation(fields: [eventId], references: [id])
+  googleEventId String
+
+  @@unique([userId, eventId])
+}
+
+model Certification {
+  id             String   @id @default(uuid())
+  memberUserId   String
+  memberUser     User     @relation(fields: [memberUserId], references: [id])
+  title          String
+  issuingBody    String
+  issueDate      DateTime
+  certificateUrl String?
+}
+
+model Newsletter {
+  id            String   @id @default(uuid())
+  title         String
+  content       String
+  attachmentUrl String?
+  publishedById String
+  publishedAt   DateTime @default(now())
+}
+
+// ---------- Notifications, Audit Log & Org Settings ----------
+
+model Notification {
+  id        String       @id @default(uuid())
+  userId    String
+  user      User         @relation(fields: [userId], references: [id])
+  channel   NotifChannel
+  type      String
+  content   String
+  status    NotifStatus  @default(PENDING)
+  sentAt    DateTime?
+  createdAt DateTime     @default(now())
+
+  @@index([userId, createdAt])
+}
+
+enum NotifChannel {
+  SMS
+  EMAIL
+  IN_APP
+}
+
+enum NotifStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String // admin user id
+  action     String // e.g. "APPROVE_APPLICATION", "RESET_PASSWORD", "CHANGE_ROLE"
+  entityType String
+  entityId   String
+  metadata   Json?
+  createdAt  DateTime @default(now())
+}
+
+// Singleton row holding organization-level assets used across every ID card
+model OrganizationSettings {
+  id                    String @id @default(uuid())
+  orgName               String
+  orgLogoUrl            String
+  presidentName         String
+  presidentSignatureUrl String
+}
